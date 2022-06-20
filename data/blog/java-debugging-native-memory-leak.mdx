@@ -32,11 +32,11 @@ several different places out of your code, it is not easy to debug them.
 1. In normal case sum of heap and non-heap memory consumed by JVM should be comparable to the total memory consumption (RSS) of the java application. But if RSS is constantly increasing with no increase in heap and non-heap memory, then you have a native memory leak. RSS though is not a very reliable way as it has some issue tracking exact memory consumed by application use PSS instead. It is basically the sum physical and shared memory per mapper.
 2. Server crashing by Linux out of memory killer which is OS mechanism that frees memory when the system gets to a stressful low memory situation.
 
-`java.lang.OutOfMemoryError: requested 1234bytes for ChunkPool::allocate. Out of swap space? Internal Error (allocation.cpp:166), pid=1190, tid=20# Error: ChunkPool::allocate`
+   `java.lang.OutOfMemoryError: requested 1234bytes for ChunkPool::allocate. Out of swap space? Internal Error (allocation.cpp:166), pid=1190, tid=20# Error: ChunkPool::allocate`
 
-`java.lang.OutOfMemoryError : unable to create new native Thread`
+   `java.lang.OutOfMemoryError : unable to create new native Thread`
 
-You may find these two errors in logs which will tell you that your JVM has run out of native memory. This will happen when you have restricted the max memory of your application or the host itself ran out of memory.
+   You may find these two errors in logs which will tell you that your JVM has run out of native memory. This will happen when you have restricted the max memory of your application or the host itself ran out of memory.
 
 ## Reasons
 
