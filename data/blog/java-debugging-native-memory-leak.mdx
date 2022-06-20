@@ -1,0 +1,134 @@
+---
+title: 'Java – Debugging Native Memory Leaks'
+date: 2022-06-20T15:32:14Z
+lastmod: '2021-02-01'
+tags: ['java', 'memory leak', 'native memory']
+draft: false
+summary: 'Java – Debugging Native Memory Leaks by Lakshya Sharma'
+layout: PostSimple
+bibliography: references-data.bib
+canonicalUrl: https://bro-code.in/blog/java-debugging-native-memory-leak/
+---
+
+<TOCInline toc={props.toc} asDisclosure />
+
+## Overview
+
+When we think about memory leaks in Java, we usually do it for Java heap memory leak which is used to store objects and are if they are not garbage collected ever. But there can be scenarios where native memory in the non-heap memory starts leaking. . The objective of this blog post is to discuss native memory leaks, and how we can detect and troubleshoot them.
+
+## Java Memory Model
+
+<div className="flex flex-wrap -mx-2 overflow-hidden xl:-mx-2">
+  <div className="my-1 px-2 w-full overflow-hidden xl:my-1 xl:px-2 xl:w-1/2">
+    ![Java Memory Model](/static/images/java-memory-model.webp)\
+  </div>
+</div>
+Java memory pools that application has access to and can allocate from. We all know, java objects are
+allocated into the Java Heap. Besides the Java Heap, there are other JVM managed memory spaces such as
+Metaspace, Stackspace, Native Area and Reserved . In addition, the JVM and the native code of applications
+can make allocations out of native memory. These native allocation can be done by JNI allocations, allocations
+made by the JIT compiler, or creation of new threads by the JVM. As native allocations can be made from
+several different places out of your code, it is not easy to debug them.
+
+## Symptoms
+
+1. In normal case sum of heap and non-heap memory consumed by JVM should be comparable to the total memory consumption (RSS) of the java application. But if RSS is constantly increasing with no increase in heap and non-heap memory, then you have a native memory leak. RSS though is not a very reliable way as it has some issue tracking exact memory consumed by application use PSS instead. It is basically the sum physical and shared memory per mapper.
+2. Server crashing by Linux out of memory killer which is OS mechanism that frees memory when the system gets to a stressful low memory situation.
+
+`java.lang.OutOfMemoryError: requested 1234bytes for ChunkPool::allocate. Out of swap space? Internal Error (allocation.cpp:166), pid=1190, tid=20# Error: ChunkPool::allocate`
+
+`java.lang.OutOfMemoryError : unable to create new native Thread`
+
+You may find these two errors in logs which will tell you that your JVM has run out of native memory. This will happen when you have restricted the max memory of your application or the host itself ran out of memory.
+
+## Reasons
+
+1. Any application calls malloc() to acquire memory. If it discards the reference without calling free(), the OS thinks process has memory but it has already lost the reference to it.
+2. Could be due to JNI allocations, JIT compiler allocations or creation of threads
+3. Class loader leak (java.lang.Class instance could not be garbage collected after deploy) due to this metaspace increases and resulting in increase of RSS.
+4. Leaking third party code.
+
+## Tools required
+
+1. The jcmd Utility : Consists of NMT + Thread/GC/VM monitoring tools + JFR
+2. Native Memory Tracking: Tracking native memory leak in JVM
+3. HPROF : For heap profiling
+4. Java VisualVM: Memory consumption, running threads, classes monitoring.
+5. The jdb Utility : For connectors and listeners
+6. The jmap Utility: Heap dump
+7. The jstack Utility : Thread dump
+8. gdb: The GNU Project Debugger
+9. Core dump analysis
+
+## Searching for the leak
+
+1. Confirm a native memory leak
+   First monitor your application JVM heap and non-heap memory using jconsole and watch -n 1 ps v to monitor rss of the application. Check if PSS for your application is growing over time, calculate it by adding the output for the below command:
+
+   ```
+   cat /proc/<pid>/smaps | grep -i 'Pss:'
+   ```
+
+   When you can confirm growth of PSS over time and heap more or less remaining constant, this confirms a leak in native memory. As mentioned above every application calls malloc/mmap to acquire memory, and free to give it back. So to search for memory leak you need to monitor these calls. There are some tools like jemalloc, libtcmalloc, valgrind to do so, each of them will require a library to be preloaded before your application starts. Doing so, will enable your logging and these logs can be visualized using a profiler.
+
+2. Tracking malloc calls and heap profiling
+   Here are the steps to use libtcmalloc.
+   ```
+   export LD_PRELOAD=<location to libtcmalloc_and_profiler.so.4
+   ```
+3. Start your application
+
+   ```
+   export HEAPPROFILE=<log-directory
+   ```
+
+4. To view stats use `pprof –gv <log-directory>.`
+
+5. Native Memory Tracking(NMT)
+   It tracks internal memory usage for a HotSpot JVM and can be enabled by:-XX:NativeMemoryTracking=summary
+   NMT data can be accessed using jcmd utility, you can also view the diff using baseline and diff command.
+
+   ```
+   jcmd <pid> VM.native_memory summary
+   jcmd <pid> VM.native_memory baseline
+   jcmd <pid> VM.native_memory summary.diff
+   ```
+
+   Limitation with the current version:
+   NMT does not track third party native code memory allocations and JDK class libraries.
+   It can result in 5% to 10% JVM performance drop, not advised for production environment.
+
+6. Tracking process memory
+   To check the heap and non heap memory consumed by JVM use jconsole and use the top –p/ ps v command to track rss .
+
+   ```
+   ps -o rss <pid>
+   ```
+
+   Check the memory map for a process and find the diff of two pmap to see the increase in the memory block.
+
+   ```
+   pmap -x <pid> > pmap.1
+   0000000100102000 56K rwx-- [ heap ]
+   0000000100110000 2624K rwx-- [ heap ] <--- native heap
+   00000001FB000000 24576K rw--- [ anon ] <--- Java Heap starts here
+   0000000200000000 1396736K rw--- [ anon ]
+   0000000600000000 700416K rw--- [ anon ]
+
+   diff pmap.1 pmap.9
+   ```
+
+   Use gdb to debug further
+
+   ```
+   gdp -pid [pid] dump memory mem.bin 0x0000000100110000 0x0000000100110000+2624000
+   ```
+
+7. Java Heap dump analysis (ClassLoader Leaks)
+   Acquired multiple heap dumps from dev and production environments, used MAT to find class-loader leaks which might cause increase in the metaspace.
+
+   Heap dump: `jmap -dump:format=b,file=heap_dump.hprof <pid>`
+
+   Thread dump: `jstack <pid>> thread_dump.txt`
+
+   Use MAT to check old class-loader instances which did not get garbage collected due to strong references/ link to the gc roots.
