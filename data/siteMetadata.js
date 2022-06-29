@@ -5,7 +5,7 @@ const siteMetadata = {
   description: 'A blog by Lakshya and Vartul',
   language: 'en-us',
   theme: 'system', // system, dark or light
-  siteUrl: 'https://www.bro-code.in/',
+  siteUrl: 'https://www.bro-code.in',
   siteRepo: 'https://github.com/lakshyasharma14/bro-code',
   siteLogo: '/static/images/logo.png',
   image: '/static/images/avatar.jpg',
