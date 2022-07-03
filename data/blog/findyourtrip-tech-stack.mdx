@@ -1,0 +1,111 @@
+---
+title: 'FindYourTrip Tech-Stack'
+date: 2022-07-03T00:32:14Z
+lastmod: '2022-07-03'
+tags: ['fyt', 'tech', 'startup', 'system design']
+draft: false
+summary: 'FindYourTrip Simple, Inexpensive, Scalable Tech-Stack'
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+<TOCInline toc={props.toc} asDisclosure />
+
+## Introduction:
+
+Having recently started [FindYourTrip](https://www.findyourtrip.in/), India's first trip
+aggregator with an aim to provide a platform for users to search, compare and book tours and trips
+from any trip organizer or travel and tour company in India. We wanted to give an overview of the
+journey in a blog post. How we managed to build complete tech for a startup in just 10$ per year.
+Furthermore, it has the freedom to extend and enhance our components and platforms.
+
+A very good technological startup has three similarities. First, they have a talented and talented
+team. Second, they have an amazing idea. They also have the first ideal tech stack to use. It is
+impossible to emphasize the last point enough. World-class ideas will go in vain if founders
+choose to use sophisticated, complex, or outdated technology.
+
+## FYT Tech Stack:
+
+![tailwind-nextjs-banner](/static/images/FYT-tech-architecture.png)
+
+- Frontend: NEXT JS, for hybrid static & server rendered react web pages
+- Backend: NEXT JS, Node Server deployed on vercel
+- DB: Postgres SQL, hosted on Heroku
+- Hasura, a GraphQL API middleware hosted on Hasura cloud
+- Material UI component library
+- AWS S3 for storing static data
+- ImakeKit CDN over S3 for fast and opitimsed images
+
+## Top Factors when selecting this Tech Stack
+
+When selecting FYT’s tech stack, there are a few factors that considered to take decision.
+
+### Cost
+
+How expensive the language or platform is was our number one consideration. However, we didn’t
+think of these expenses solely in terms of upfront licensing fees. Instead, what are the upfront
+costs in addition to the ongoing maintenance expenditures that a particular tech stack will use?
+Are there security or liability costs?
+
+### Time to market
+
+The longer your project takes to come to market, the harder it will be for you to succeed. You
+might have a competitor get their idea out first, which means you'll have to play catch-up. Or,
+you might run out of money fighting a tech that takes frustratingly long to use.
+
+Pick technology solutions that will empower your startup to achieve more. Don't choose technologies that will be a
+burden to your team and company. Pick tech that is easy to integrate and has plenty of third-party
+controls and support. These features will make it easy for you to use.
+
+### Scalability
+
+We plan for 1,000,000 users, not 10 users. Startup won't survive long if only ten people use your
+app or service, so you should be thinking about scalability from the start. Pick a technology that
+will scale as your startup grows.
+
+There are a lot of horror stories of startups working night and day, only to have their product
+crash on the first day and receive significant negative press. Even big companies are susceptible
+to this, like Disney+, which crashed on launch day due to unanticipated demand.
+
+## Why?
+
+### NEXT JS
+
+We hosted next js website on vercel which is free till we decide to monetize the product. And
+also, it is quite inexpensive to scale the same site on vercel when we start to expect more
+traffic on the website. We can consider it to move to AWS as well with minimal effort if we start
+facing difficulties to scale with vercel.
+
+Of course, onboarding people directly who know next js is not easy. Most people are aware of react
+and it is farely small learning curve to learn next js if you know react js. Things considered
+before choosing it: React, Gatsby
+
+### Material UI
+
+We went with, well-known, Material UI and bought templates for MUI store which costed us 70$ but
+it accelerated the frontend development with premade components. And also ensured that ongoing
+maintenance and labor costs aren't sky-high. Things considered before choosing it: TailwindUI Kit,
+Chakra UI, Evergreen, DaisyUI
+
+### AWS S3
+
+S3 has a free tier for 1 year which was sufficient for our use case as we majorly used to it store
+images and we minimized the read count and latency by using a CDN. Things considered before
+choosing it: Azure, Google Cloud
+
+### ImageKit
+
+It has a farely simple and most lenient free tier out of most of the CDN providers with almost all
+the key features like image and video optimization with decent performance. Free tier and cost for
+scaling were the two main factors to choose this. Things considered before choosing it: Bunny CDN,
+Cloudflare, KeyCDN, Google Cloud CDN, Amazon CloudFront
+
+### Hasura
+
+It was pretty straightforward as this is the best middleware if you want to reduce your time to
+market by a few months. Hasura provides a GraphQL API layer over are well loved postgres DB. We
+get row level authorization and farely simplified GraphQL endpoints to be used directly with the
+frontend. It is easy to setup and scale. You can use Hasura cloud initially to host it and also
+migration to AWS if you exceed free tier easily. You can use any GraphQL client like Apollo and
+Urql to connect to it, we chose urql but that is a story in itself. Things considered before
+choosing it: Making direct SQL calls, apollo and prisma GraphQL.
