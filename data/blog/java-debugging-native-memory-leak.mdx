@@ -19,16 +19,16 @@ When we think about memory leaks in Java, we usually do it for Java heap memory 
 
 ![tailwind-nextjs-banner](/static/images/java-memory-model.webp)
 
-Java memory pools that application has access to and can allocate from. We all know, java objects are
-allocated into the Java Heap. Besides the Java Heap, there are other JVM managed memory spaces such as
-Metaspace, Stackspace, Native Area and Reserved . In addition, the JVM and the native code of applications
-can make allocations out of native memory. These native allocation can be done by JNI allocations, allocations
-made by the JIT compiler, or creation of new threads by the JVM. As native allocations can be made from
+Java memory pools that the application has access to and can allocate from. We all know, java objects are
+allocated into the Java Heap. Besides the Java Heap, there are other JVM-managed memory spaces such as
+Metaspace, Stackspace, Native Area and Reserved. In addition, the JVM and the native code of applications
+can make allocations out of native memory. These native allocations can be done by JNI allocations, allocations
+made by the JIT compiler, or the creation of new threads by the JVM. As native allocations can be made from
 several different places out of your code, it is not easy to debug them.
 
 ## Symptoms
 
-1. In normal case sum of heap and non-heap memory consumed by JVM should be comparable to the total memory consumption (RSS) of the java application. But if RSS is constantly increasing with no increase in heap and non-heap memory, then you have a native memory leak. RSS though is not a very reliable way as it has some issue tracking exact memory consumed by application use PSS instead. It is basically the sum physical and shared memory per mapper.
+1. In normal cases sum of the heap and non-heap memory consumed by JVM should be comparable to the total memory consumption (RSS) of the java application. But if RSS is constantly increasing with no increase in heap and non-heap memory, then you have a native memory leak. RSS though is not a very reliable way as it has some issue tracking exact memory consumed by application use PSS instead. It is basically the sum physical and shared memory per mapper.
 2. Server crashing by Linux out of memory killer which is OS mechanism that frees memory when the system gets to a stressful low memory situation.
 
    `java.lang.OutOfMemoryError: requested 1234bytes for ChunkPool::allocate. Out of swap space? Internal Error (allocation.cpp:166), pid=1190, tid=20# Error: ChunkPool::allocate`
@@ -39,10 +39,10 @@ several different places out of your code, it is not easy to debug them.
 
 ## Reasons
 
-1. Any application calls malloc() to acquire memory. If it discards the reference without calling free(), the OS thinks process has memory but it has already lost the reference to it.
-2. Could be due to JNI allocations, JIT compiler allocations or creation of threads
+1. Any application calls malloc() to acquire memory. If it discards the reference without calling free(),the OS thinks the process has memory but it has already lost the reference to it.
+2. Could be due to JNI allocations, JIT compiler allocations or the creation of threads
 3. Class loader leak (java.lang.Class instance could not be garbage collected after deploy) due to this metaspace increases and resulting in increase of RSS.
-4. Leaking third party code.
+4. Leaking third-party code.
 
 ## Tools required
 
@@ -65,7 +65,7 @@ several different places out of your code, it is not easy to debug them.
    cat /proc/<pid>/smaps | grep -i 'Pss:'
    ```
 
-   When you can confirm growth of PSS over time and heap more or less remaining constant, this confirms a leak in native memory. As mentioned above every application calls malloc/mmap to acquire memory, and free to give it back. So to search for memory leak you need to monitor these calls. There are some tools like jemalloc, libtcmalloc, valgrind to do so, each of them will require a library to be preloaded before your application starts. Doing so, will enable your logging and these logs can be visualized using a profiler.
+   When you can confirm the growth of PSS over time and heap more or less remaining constant, this confirms a leak in native memory. As mentioned above every application calls malloc/mmap to acquire memory, and is free to give it back. So to search for memory leak you need to monitor these calls. There are some tools like jemalloc, libtcmalloc, valgrind to do so, each of them will require a library to be preloaded before your application starts. Doing so will enable your logging and these logs can be visualized using a profiler.
 
 2. Tracking malloc calls and heap profiling
    Here are the steps to use libtcmalloc.
@@ -82,7 +82,7 @@ several different places out of your code, it is not easy to debug them.
 
 5. Native Memory Tracking(NMT)
    It tracks internal memory usage for a HotSpot JVM and can be enabled by:-XX:NativeMemoryTracking=summary
-   NMT data can be accessed using jcmd utility, you can also view the diff using baseline and diff command.
+   NMT data can be accessed using jcmd utility, you can also view the diff using the baseline and diff command.
 
    ```
    jcmd <pid> VM.native_memory summary
@@ -90,18 +90,18 @@ several different places out of your code, it is not easy to debug them.
    jcmd <pid> VM.native_memory summary.diff
    ```
 
-   Limitation with the current version:
-   NMT does not track third party native code memory allocations and JDK class libraries.
-   It can result in 5% to 10% JVM performance drop, not advised for production environment.
+   Limitations with the current version:
+   NMT does not track third-party native code memory allocations and JDK class libraries.
+   It can result in a 5% to 10% JVM performance drop, not advised for the production environment.
 
 6. Tracking process memory
-   To check the heap and non heap memory consumed by JVM use jconsole and use the top –p/ ps v command to track rss .
+   To check the heap and non-heap memory consumed by JVM use jconsole and use the top –p/ ps v command to track rss .
 
    ```
    ps -o rss <pid>
    ```
 
-   Check the memory map for a process and find the diff of two pmap to see the increase in the memory block.
+   Check the memory map for a process and find the diff between the two pmap to see the increase in the memory block.
 
    ```
    pmap -x <pid> > pmap.1
@@ -121,7 +121,7 @@ several different places out of your code, it is not easy to debug them.
    ```
 
 7. Java Heap dump analysis (ClassLoader Leaks)
-   Acquired multiple heap dumps from dev and production environments, used MAT to find class-loader leaks which might cause increase in the metaspace.
+   Acquired multiple heap dumps from dev and production environments, and used MAT to find class-loader leaks that might cause an increase in the metaspace.
 
    Heap dump: `jmap -dump:format=b,file=heap_dump.hprof <pid>`
 
