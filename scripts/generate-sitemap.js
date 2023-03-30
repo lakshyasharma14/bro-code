@@ -23,6 +23,7 @@ const siteMetadata = require('../data/siteMetadata')
             ${pages
               .map((page) => {
                 // Exclude drafts from the sitemap
+                let lastmod
                 if (page.search('.md') >= 1 && fs.existsSync(page)) {
                   const source = fs.readFileSync(page, 'utf8')
                   const fm = matter(source)
@@ -32,6 +33,10 @@ const siteMetadata = require('../data/siteMetadata')
                   if (fm.data.canonicalUrl) {
                     return
                   }
+                  lastmod = fm.data.lastmod
+                }
+                if (!lastmod) {
+                  lastmod = new Date().toJSON().slice(0, 10)
                 }
                 const path = page
                   .replace('pages/', '/')
@@ -50,6 +55,7 @@ const siteMetadata = require('../data/siteMetadata')
                 return `
                         <url>
                             <loc>${siteMetadata.siteUrl}${route}</loc>
+                            <lastmod>${lastmod}</lastmod>
                         </url>
                     `
               })
