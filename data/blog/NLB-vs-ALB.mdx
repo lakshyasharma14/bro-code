@@ -1,0 +1,101 @@
+---
+title: 'ALB vs NLB'
+date: 2023-08-13T15:32:14Z
+lastmod: '2023-08-13'
+tags: ['tech', 'system design', 'distributed system']
+draft: false
+summary: 'ALB vs NLB Which load balancer is best for my workload? by Lakshya Sharma'
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+<TOCInline toc={props.toc} asDisclosure />
+
+## Overview
+
+Which load balancer is best for my workload?As in most cases, AWS offers multiple solutions. Read on to find out whether to use Application Load Balancer (ALB) or Network Load Balancer (NLB) to distribute incoming requests to a set of virtual machines or containers.
+
+## The Components
+
+ALB and NLB are used for same purpose and have a lot of things in common:
+
+- The load balancer acts as a gateway to the system.
+- Listener for incoming traffic
+- Forwards the request to the target group.
+- A target group contains one or more targets.
+- Health Checks
+
+## The comparison
+
+The following table compares the ALB and NLB in detail.
+
+|                           | ALB                                                                             | NLB                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Protocols                 | HTTP/1, HTTP/2, gRPC                                                            | TCP, UDP                                                                                       |
+| Performance               | Low Latency                                                                     | Very Low Latency                                                                               |
+| Traffic Spikes            | ⚠️ Inform AWS Support about huge traffic spikes                                 | ✅ Deals with huge and unexpected traffic spikes                                               |
+| Static IP Addresses       | ❌ No. However, you could place an NLB in front of an ALB.                      | ✅ Yes                                                                                         |
+| TLS Termination           | ✅ Yes                                                                          | ✅ Yes                                                                                         |
+| Targets                   | EC2 Instance, IP Address, Lambda                                                | EC2 Instance, IP Address, ALB                                                                  |
+| Client IP preservation    | Use HTTP header X-Forwarded-For                                                 | Optional, but comes with limitations                                                           |
+| Routing Algorithm         | Round Robin or Least Outstanding Requests                                       | Random                                                                                         |
+| Deregistering targets     | ALB stops sending requests and waits for open requests                          | NLB stops opening new connections, but the application needs to terminate connections properly |
+| Multiplexing              | ✅ Yes, reuses connections to targets                                           | ❌ No, does not reuse connections to targets                                                   |
+| Maximum number of targets | 1000-5000                                                                       | 500-1000                                                                                       |
+| Security Group            | Security group of ALB controls inbound traffic, targets reachable from ALB only | Security group of targets control inbound traffic, targets reachable from clients              |
+| Request based routing     | ✅ Yes, based on hostname, path, header, …                                      | ❌ No                                                                                          |
+| WAF                       | ✅ Yes                                                                          | ❌ No                                                                                          |
+| Authentication            | ✅ Yes (OpenID Connect, SAML, …)                                                | ❌ No                                                                                          |
+| Slow Start Mode           | ✅ Yes                                                                          | ❌ No                                                                                          |
+| Sticky Session            | ✅ Yes                                                                          | ❌ No                                                                                          |
+| IPv6                      | ✅ Yes                                                                          | ✅ Yes                                                                                         |
+| Costs                     | 💰💰💰                                                                          | 💰💰 (But causes more connections and therefore higher load on targets.)                       |
+
+## The questions to ask yourself
+
+If you answered yes to any of the questions below, consider using NLB for your business.
+
+### Do clients connect via UDP or non-HTTP?
+
+ALB only supports HTTP/1.1, HTTP/2 or gRPC. Therefore, when users connect to your application using a different protocol, you should use NLB instead.
+For example, all scenarios using UDP require NLB. Also, NLB is your only option now when you want to use HTTP/3.
+
+### Do you need to optimize for performance?
+
+ALB runs at layer 7; this means that the ALB examines the content of each incoming HTTP request. In contrast, NLB operates at layer 4.
+All NLB cares about is sending TCP or UDP connections to their destination. For example, NLB does not check for HTTP requests.
+
+So NLB has less work than ALB. As a result, the time it takes for NLB to send requests is reduced. Therefore, when performance is important to your projects, you should consider using NLB to reduce latency.
+
+### Do you expect unpredictable and huge traffic spikes?
+
+ALB automatically changes based on connection and request growth. However, this will take a few minutes. Therefore, when large traffic is required, the ALB cannot scale fast enough to handle all incoming requests at once. AWS recommends that you notify support so they can prepare the ALB for you if you think you may encounter a major problem in the future.
+However, this method only works if you can estimate the traffic.
+
+Conversely, the NLB need not measure the number of nodes holding the connection. In contrast, NLB is designed to handle large and unpredictable traffic.
+
+So NLB is better when you expect a big, unpredictable match. Unfortunately, AWS does not define what "high traffic" means.
+Most applications will not reach the ALB limit. Imagine new Playstation traffic coming from a Super Bowl ad to your web app or to your online store, and those situations can be problematic.
+
+### Do you require static IP addresses for inbound traffic?
+
+ALB, the client must resolve the DNS name. The IP address will be changed. For example, when the ALB needs to scale, the domain will point to another IP address.
+
+So when you need a static IP address for access, ALB is not an option. Fortunately, that's what NLB does right out of the box. Possible situations are: third parties who insist on using a static IP address to create firewall rules, or users who cannot resolve the hostname.
+
+## Mental Model
+
+When it comes to AWS, it helps to have a mental model of the building block it provides.
+Treat the ALB as a reverse proxy distributing that distributes requests from virtual machines or containers. ALB also offers features such as request-based reporting, authentication, and security. ALB is like a fully managed, scalable and highly available version of NGINX, HAProxy or Caddy.
+
+Instead, think of NLB as a method of routing traffic to a set of virtual machines or containers at the network layer.
+You will get a static anycast IP address pointing to the dynamic pool. Similar services include AWS Global Accelerator and Google Cloud Load Balancer.
+
+## Summary
+
+If you need to choose a load balancer, choose ALB if you can't find a good reason to use NLB. The main reasons for choosing NLB over ALB are:
+
+Operations that require UDP or non-HTTP protocols.
+Latency is important, you should optimize every millisecond.
+Unexpected traffic spike
+Inbound traffic must be routed to a static IP address.

@@ -1,0 +1,70 @@
+---
+title: 'Failure detection and coordinated failure'
+date: 2023-08-13T15:32:14Z
+lastmod: '2023-08-13'
+tags: ['tech', 'system design', 'resiliency', 'distributed system']
+draft: false
+summary: 'Failure detection and coordinated failure by Lakshya Sharma'
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+<TOCInline toc={props.toc} asDisclosure />
+
+## Failure detection
+
+A failure detector is a computer program or subsystem responsible for detecting a fault or crash. This is a difficult problem for several reasons. Among these reasons, the most difficult to detect are:
+
+#### Asynchronous Communication
+
+In a distributed network, nodes in the network communicate with each other.
+Messages may be delayed or lost due to network delays or malfunctions. This can cause nodes to fail completely.
+
+#### Partial Error
+
+One of the system partitions may have failed partially, which means that some services or devices are available while others are not. This makes it difficult to locate the fault accurately and quickly.
+
+#### Missing Information
+
+If a node cannot gather information about the status of other nodes in the system.
+However, this information may not be complete, especially in large deployments where nodes will be geographically distributed.
+
+#### Network Partition
+
+A network partition occurs when the network connection between nodes is lost, causing the brain to be disconnected. As a result of the errors found, each unit can continue to work independently.
+
+#### Node Heterogeneity
+
+Nodes in a distribution can be heterogeneous, that is, they can have different hardware, software, and configuration. This makes it difficult to establish a basis for error detection on all nodes.
+
+#### Intermittent faults
+
+Some faults are intermittent, meaning they appear for a short time and then disappear. These faults can be difficult to find, especially if they are frequent or rare.
+
+#### False Positives and False Negatives
+
+Malfunction detection algorithms must balance the need to quickly detect false positives (no faults found) or false negatives (no faults) against risk. Achieving this balance can be difficult, especially in distributed systems.
+
+## Failure Strategy
+
+Our current failure strategy is to rely on services to detect the failure of the primary zone and fail the secondary zone.
+The machine uses the telephone to measure the status and manually transfer the vehicle from the first zone to the second zone (such as manual operation). We currently have no plans for troubleshooting or transportation technology for the last mile. Our own system is compatible with all diagnostic systems for various conditions that can cause errors, and the second area is that trying a one-size-fits-all setup is very difficult and needs a worker. Service failure is the right decision for now. Section
+
+#### Matching Plan Section
+
+This does not mean that we should not have a failed plan.
+All groups participating in non-work service must meet certain minimum requirements.
+
+A failover plan outlining the procedures, tools, and resources required to perform the failover. The plan should include team roles and responsibilities, communication processes, and escalation plans.
+Test Failover Plans: Regular tests to ensure failover plans work as expected. These tests can be done through mock or real tests.
+
+#### Automatic failover
+
+The team should automate failover as much as possible to reduce manual response time and ensure fast recovery time. More centralized tools may be needed to handle requirements such as DNS failure and endpoint discovery. In a one-year group backup scenario (for example) there may be other technical tools that create certain groups to collect certain resources. This is similar to workbook style automation, scheduling the environment so that it cannot receive traffic or recover from errors and return to normal operations. The
+monitors systems and their components using monitoring tools to quickly detect system or component failures.
+This allows for quick responses and reduces the impact of failure.
+
+#### Build Resistance Mechanisms
+
+Enhance immunity by reducing blast radius, simplifying the body, or increasing regeneration.
+Planning Information: Provide up-to-date information on the failure plan, system architecture and configuration that needs to be up to date
