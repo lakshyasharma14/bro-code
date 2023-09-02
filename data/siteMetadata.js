@@ -2,7 +2,8 @@ const siteMetadata = {
   title: 'Bro-Code Blog',
   author: 'Lakshya Sharma',
   headerTitle: 'Bro-Code Blog',
-  description: 'A blog by Lakshya and Vartul',
+  description:
+    'Learn system design, distributed system & tech insigts on bro-code blog. Stay updated with Programming, Web development, Artificial intelligence-AI, Machine learning-ML, Cloud computing and other trending technology',
   language: 'en-us',
   theme: 'system', // system, dark or light
   siteUrl: 'https://www.bro-code.in',
