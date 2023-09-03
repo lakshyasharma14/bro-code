@@ -3,7 +3,7 @@ const siteMetadata = {
   author: 'Lakshya Sharma',
   headerTitle: 'Bro-Code Blog',
   description:
-    'Learn system design, distributed system & tech insigts on bro-code blog. Stay updated with Programming, Web development, Artificial intelligence-AI, Machine learning-ML, Cloud computing and other trending technology',
+    'Learn system design, distributed system & tech insigts on bro-code blog. Stay updated with Programming, Web development, AI, ML, Cloud computing and other trending tech.',
   language: 'en-us',
   theme: 'system', // system, dark or light
   siteUrl: 'https://www.bro-code.in',
