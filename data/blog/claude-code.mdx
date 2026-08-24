@@ -1,0 +1,58 @@
+---
+title: 'Claude Code: Agentic Coding From the Terminal'
+date: 2026-08-24T00:00:00Z
+lastmod: '2026-08-24'
+tags: ['ai', 'agents', 'claude code', 'llm', 'developer tools']
+draft: false
+summary: 'What Claude Code actually is, how it differs from autocomplete-style AI tools, and the concepts — tools, permissions, subagents, skills, MCP, hooks — that make it useful for real engineering work instead of toy demos.'
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+<TOCInline toc={props.toc} asDisclosure />
+
+*Notes from actually using it, not a feature tour.*
+
+Most "AI coding tools" are autocomplete with better taste — they suggest the next few lines and get out of the way. Claude Code is a different shape of tool: it's an agent that lives in your terminal, reads your repo, runs commands, edits files, and iterates on its own output, with you approving the risky steps. The difference matters less for one-liners and more for the kind of work that used to require context-switching between reading code, running it, and fixing it — debugging a flaky test, migrating an API across forty call sites, or writing a feature that touches five files you didn't open yourself.
+
+This post is about the concepts that make that work, not a getting-started tutorial.
+
+## It's a loop, not a completion
+
+The core mechanic is simple to state and easy to underestimate: Claude Code runs a loop of *read → act → observe → decide* until the task is done or it needs you. A prompt like "fix the failing test in `auth.spec.ts`" doesn't produce a diff in one shot — it reads the test, runs it, reads the stack trace, greps for the function under test, edits it, reruns the test, and only stops when the loop actually converges (or it gets stuck and asks).
+
+This is why the tool is built around **tools**, not just tokens. Reading files, editing files, running shell commands, searching code, fetching URLs — each is a discrete capability the model can invoke, inspect the result of, and chain. The quality of an agentic coding tool tracks the quality of its tool design almost as much as the quality of the underlying model: bad tools (vague errors, no structured output, no way to search efficiently) produce a model that flails even when it "understands" the task.
+
+## Permissions are the actual product decision
+
+Autonomy without judgment about blast radius is just a faster way to break things. Claude Code's permission model is the part that makes it trustworthy enough to run against a real repo:
+
+- **Reversible, local actions** (reading files, running tests, editing code in a working tree) proceed with minimal friction.
+- **Hard-to-reverse or externally visible actions** (`git push`, force-push, deleting branches, modifying CI config, sending a message on your behalf) require an explicit approval, every time — one approval doesn't generalize to the next one.
+- Some categories are refused outright regardless of instruction — entering credentials, executing financial trades, permanently deleting data — because no amount of "I promise it's fine" changes the cost of being wrong.
+
+The interesting design property here isn't the specific list — it's that the boundary is drawn by *reversibility and blast radius*, not by task difficulty. A large refactor across fifty files is "easy" to approve because it's all sitting in a working tree you can diff and discard. A single `git push --force` is small but requires a stop, because it can destroy someone else's work.
+
+## Context is the scarce resource, not intelligence
+
+A model that can reason well about a 200-line function will still make bad decisions across a 2M-token monorepo if it's fed the wrong 200 lines. Most of what makes an agentic session go well or badly is *what ends up in context*, not the raw capability of the model. A few consequences of taking that seriously:
+
+- **Search before read.** Grepping for a symbol and reading the three relevant files beats loading a directory tree "just in case." Precision in retrieval is a bigger lever than context window size once the window is large enough to be a nuisance rather than a constraint.
+- **Subagents exist to protect the main thread's context**, not just to parallelize. Delegating an open-ended search ("find every place this deprecated function is called") to a subagent and getting back a short report keeps the primary conversation from drowning in file contents it doesn't need to keep.
+- **Compaction** — summarizing older turns as a session runs long — is a tradeoff, not a free lunch. It's what lets a session continue for hours of work instead of hitting a wall, at the cost of fidelity on details that got compressed. Long sessions on complex tasks benefit from checkpoints (a plan file, a todo list, a commit) that survive compaction better than prose in the transcript does.
+
+## Skills and MCP: two different extension mechanisms, easy to conflate
+
+**Skills** are packaged *instructions* — a markdown file (plus optional scripts/resources) that tells the agent how to approach a recurring kind of task: a house style for commit messages, a team's code review checklist, the steps for cutting a release. They extend *behavior*. The model already has the tools it needs; a skill just tells it which playbook to follow and when.
+
+**MCP (Model Context Protocol)** servers extend *capability* — they're how the agent gets tools it didn't ship with: talking to a project tracker, querying a database, driving a browser, calling a trading API. An MCP server is a process that exposes a set of typed tools over a standard protocol; Claude Code (or any MCP client) can call them exactly like its built-in tools.
+
+The distinction matters practically: if a task keeps happening (release notes, PR review, a specific migration pattern) and you find yourself re-explaining the same steps, that's a skill. If a task needs the agent to reach a system it currently has no way to touch, that's an MCP server. Reaching for the wrong one produces either a bloated tool list nobody asked for, or a skill file that just re-describes a capability gap it can't close.
+
+## Hooks: automation the model can't opt out of
+
+Skills and system prompts are *instructions* — strong ones, but still something the model interprets. **Hooks** are shell commands the harness runs on specific events (before a tool call, after a file edit, on session start), outside the model's control. If you want "every commit gets linted" or "block edits to `prod.config`" to hold with certainty rather than with high probability, that's a hook, not a prompt. The rule of thumb: policy you can restate as "please don't" belongs in instructions; policy that must never be skipped belongs in a hook.
+
+## Where this actually earns its keep
+
+Not every task benefits from an agent loop — a single-line typo fix doesn't need a plan. The tasks where it's a genuine unlock share a shape: the *bottleneck was integration, not typing*. Tracing a bug across a call graph you don't have memorized, applying a mechanical-but-tedious change across dozens of files consistently, standing up a feature that needs a data-model change plus an API change plus a UI change plus a test — these are jobs where the expensive part was always "hold enough of the system in your head at once," and that's exactly the part a tool with real tool-use and real context management helps with. Used well, it converts explanation quality (can you say precisely what "correct" looks like here?) into engineering throughput more directly than a chat window ever could.
