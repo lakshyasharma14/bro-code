@@ -1,0 +1,281 @@
+---
+title: 'Designing a Memory Architecture for Multi-Agent Systems'
+date: 2026-08-24T00:00:00Z
+lastmod: '2026-08-24'
+tags: ['ai', 'agents', 'multi-agent systems', 'system design', 'llm']
+draft: false
+summary: 'A practical, opinionated guide to designing memory for multi-agent LLM systems: topology, structural tenant isolation, the short-to-long maturation pipeline, retrieval and clamping, concurrency, and the four canonical failure modes.'
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+<TOCInline toc={props.toc} asDisclosure />
+
+*A practical guide. Distilled from a production build, written to be reusable across domains.*
+
+Memory is what turns a set of LLM calls into a *system* — agents that stay consistent, coordinate, and improve with use. In a multi-agent system (MAS) this is harder than it looks: memory becomes shared infrastructure, and shared infrastructure has failure modes single-agent memory never faces (leakage across users, stale beliefs, contradictory writes, lost provenance). This doc lays out a concrete, opinionated way to design one.
+
+It is organized as a series of decisions. For each: the choice, why, and how to implement it so the guarantee is *structural* rather than a matter of discipline.
+
+---
+
+## Reference architecture (at a glance)
+
+A generic layout of the pieces this guide builds. A user interacts through an **orchestration** entry point; agents run behind a **governance harness** that mediates every data read, memory access, and emit; the **memory layer** turns short-term events into matured long-term knowledge and serves it back.
+
+```mermaid
+flowchart LR
+    USER(["User / Principal"])
+    ORCH["Orchestration<br/>(entry / routing)"]
+
+    subgraph HARNESS["Governance Harness"]
+        direction TB
+        subgraph AGENTS["Agents"]
+            direction LR
+            A1["Agent A"]
+            A2["Agent B"]
+            A3["Agent C"]
+            A4["…"]
+        end
+        GUARD["Output guardrail · sensitive-data checkpoint ·<br/>audit · memory read/clamp · access control"]
+    end
+
+    subgraph DATA["Data Layer (systems of record)"]
+        direction TB
+        D1["Source A"]
+        D2["Source B"]
+        D3["Source C"]
+    end
+
+    subgraph MEM["Memory Layer"]
+        direction TB
+        ST["Short-term memory<br/>(staged events · context · messages · feedback)"]
+        PIPE["Memory generation pipeline<br/>DRAFT → MERGE → SYNTHESIS"]
+        LT["Long-term memory"]
+        RET["Retrieval"]
+        ST -->|distill| PIPE
+        PIPE -->|writes to| LT
+        LT --> RET
+    end
+
+    USER -->|interacts / feedback| ORCH
+    ORCH --> HARNESS
+    HARNESS -->|fetch data| DATA
+    HARNESS -->|events / signals| ST
+    RET -->|matured knowledge| HARNESS
+
+    STRAT["Generation strategies (examples)<br/>• Org level: shared preferences & patterns<br/>• Agent level: per-agent preferences & style<br/>• Principal profile: who they are / how they work"]
+    RETS["Retrieval strategies (examples)<br/>• Recency — last N by timestamp<br/>• Semantic — top-k nearest to the query<br/>• Keyword / full-text<br/>• Hybrid — vector + keyword, then rerank<br/>• Graph traversal — walk entities & edges"]
+    PIPE -.-> STRAT
+    RET -.-> RETS
+
+    classDef harness fill:#d5f5d5,stroke:#2f855a,color:#111;
+    classDef data fill:#fde2e2,stroke:#c53030,color:#111;
+    classDef mem fill:#d6e9ff,stroke:#2b6cb0,color:#111;
+    classDef note fill:#eef4ff,stroke:#4a5568,color:#111;
+    class A1,A2,A3,A4,GUARD harness;
+    class D1,D2,D3 data;
+    class ST,PIPE,LT,RET mem;
+    class STRAT,RETS note;
+```
+
+**Reading it:** the user talks to orchestration; agents sit inside a harness that is the single path to data, memory, and output (so nothing bypasses governance); short-term events are distilled through the draft→merge→synthesis pipeline into long-term memory; retrieval serves matured knowledge back to the agents. The dotted callouts list interchangeable **generation** and **retrieval** strategies — pick per use case.
+
+---
+
+## 0. First principles
+
+Four principles drive every decision below:
+
+1. **Isolation by construction, not by policy.** A tenant/user boundary that depends on every caller "remembering to check" will eventually leak. Make the boundary a property of *how objects are built*, so the wrong access can't even be expressed.
+2. **Learn behavior, not raw content.** Long-term memory should hold *how* the user/agents work — preferences, patterns, process — not the sensitive payloads they work on. Re-fetch sensitive data from its system of record at use time.
+3. **Nothing is applied until it's earned.** A single observation is a hypothesis, not a belief. Gate what influences output behind repeated, recent, consistent evidence.
+4. **Every write is attributable and reversible.** Who wrote it, when, why, and what it superseded — or you can't debug, audit, or roll back a bad memory.
+
+---
+
+## 1. Decide the topology: local, shared, or hybrid
+
+Three options, and the answer is almost always the third.
+
+- **Local-only** — each agent keeps private memory, agents exchange via messages. Simple, isolated, but knowledge gets duplicated and agents drift out of sync (communication cost grows ~O(N²) with agent count).
+- **Shared-only** — one global store all agents read/write. Great for coordination ("team mind"), but becomes a noisy commons and, worse, erases access distinctions — every agent sees everything.
+- **Hybrid (recommended)** — a **shared store for higher-level knowledge** *plus* **per-agent private memory**. An orchestrator/coordinator (or a shared service) owns the common view; each worker keeps its own task-specific learnings.
+
+**Why hybrid wins:** it gives you collective intelligence (agents personalize off a common understanding) without the noise or the access-control problems of a fully shared store. It is the consensus pattern across the recent literature.
+
+**Concretely, split memory into two tiers:**
+
+- **Central shared memory** — a consolidated profile/understanding every agent reads and contributes to.
+- **Personal per-agent memory** — each agent's own learned rules, read/written only by that agent.
+
+Route both through **one API** (call it a *Memory Hub*) so the shared policy — scoping, maturation, redaction — is implemented once, not re-implemented per agent.
+
+---
+
+## 2. Make tenancy/user isolation structural
+
+This is the single most important safety decision. Do not let a caller pass in the identity of the data it wants.
+
+**Pattern: namespaces by construction.** Derive every namespace from the *authenticated* context, inside the memory layer. Expose memory by a **logical kind** (a profile, a set of preferences, an activity log, …), never by a raw namespace string.
+
+A namespace has two parts: **where** the memory lives (the scope, built from who's authenticated) and **what** it is (the kind).
+
+```
+[ who you are ] / [ what kind of memory ] / [ optional: which agent or session ]
+```
+
+- The **"who you are"** part is filled in by the memory layer from the authenticated session — the caller never provides it.
+- The **"what kind"** part is chosen from a fixed list of logical stores (a shared profile, an agent's private preferences, an activity log, a shared team scope, …).
+- The **optional last part** (an agent name or session id) just narrows things down *inside* the space you already own.
+
+For example, a memory address might read as:
+
+> *"this principal's shared profile"*  or  *"this principal's saved preferences for the coding agent"*  or  *"the team's shared notes."*
+
+The important part is **who builds each piece** — the caller never gets to name someone else's memory.
+
+Key properties:
+
+- There is **no way for a caller to say "give me someone else's memory"** — the identity part is never an argument, so another principal's address can't even be built.
+- The optional narrowing parts are validated as safe tokens (no `/`, no `..`) so they can't escape your own space.
+- **Defence in depth:** re-verify every record the backend *returns* is in-scope, and refuse (fail-closed) any that isn't. Reads only ever target your own namespaces, so this fires only if a shared backend misbehaves — and when it would, you refuse rather than leak.
+
+The payoff: "cross-tenant access is impossible" becomes a statement about the type system, not about reviewer vigilance.
+
+---
+
+## 3. Separate short-term from long-term memory
+
+- **Short-term / working memory** — the live task context: the running transcript/conversation, staged intermediate results, a session summary. High-churn, cheap, discarded or rolled up at session end. This tier *may* hold sensitive payloads transiently.
+- **Long-term memory** — strategy-derived records that survive the session: preferences, profile, learned patterns, episodic history. Only *behavioral / preference / process* knowledge — **never raw sensitive content**.
+
+The boundary between them is the maturation pipeline (next section). Short-term is where raw signal lives; only distilled, de-identified, *earned* knowledge crosses into long-term.
+
+---
+
+## 4. The short→long pipeline and the maturation gate
+
+Don't let a single event mutate long-term beliefs directly. Run an explicit three-stage pipeline so cheap extraction is isolated from expensive consolidation, and "what we actually apply" is isolated from both:
+
+```mermaid
+flowchart LR
+    E["Short-term events<br/>(turns · corrections · outcomes)"] --> X["DRAFT<br/>per-event extraction<br/>(high recall)"]
+    X --> C["MERGE<br/>dedupe · conflict/supersede ·<br/>optimistic (ETag) write"]
+    C --> S["SYNTHESIS<br/>maturation · contradiction · decay"]
+    S --> R["Rule record<br/>{support_count, last_seen, confidence, status}"]
+    R -->|support ≥ threshold & consistent & recent| M["MATURE (applied)"]
+    R -->|below threshold| P["PROVISIONAL (stored, not applied)"]
+    M -->|no confirming signal over TTL| D["DECAY → provisional / expired"]
+```
+
+- **Draft** (per event, cheap): extract candidate rules from a single event. High recall, no cross-record reasoning.
+- **Merge** (per namespace, on write): fold drafts into existing records — dedupe, detect conflict/supersede, bump `support_count` / `last_seen` / `confidence`. Use **optimistic concurrency (ETag/compare-and-append)** so two concurrent sessions can't clobber each other (see §6).
+- **Synthesis** (periodic / threshold): recompute status against the maturation gate, resolve contradictions recency-weighted, decay stale rules, produce the compact "applied" view agents read.
+
+**The maturation gate** decides what influences output:
+
+- **PROVISIONAL** — stored but *not applied*. A one-off never hardens.
+- **MATURE (applied)** — enough consistent, recent support. Sensible defaults: **≥3 occurrences within 90 days**.
+- **DECAY** — no confirming signal within a TTL (e.g. 60 days) → back to provisional; past the outer window → expired. **Nothing persists forever.**
+
+**One useful refinement:** *declarative* facts a principal explicitly states about themselves can establish on a **single** clear statement, while *behavioral* traits must recur. You don't repeat a stated fact every session, but you should have to demonstrate a habit before it's trusted.
+
+Make thresholds **config-tunable per agent** — some agents warrant more evidence than others.
+
+---
+
+## 5. Retrieval: read the applied view, then clamp it
+
+At use time an agent reads its **mature** personal rules **bounded by** shared/organizational guardrails, so a personalization can never exceed the allowed range:
+
+```
+personal = memory.read(kind="pref", agent=A, status="mature")
+shared   = memory.read(kind="pattern", agent=A)     # org guardrails / defaults
+applied  = clamp(personal, shared)                   # out-of-range prefs clamped; clamp recorded
+```
+
+Enforce the clamp **inside the memory/governance layer**, not in agent code, so no agent can apply an out-of-bounds preference. Reading `status="mature"` only is what keeps provisional noise out of behavior.
+
+---
+
+## 6. Consistency: reject last-writer-wins
+
+Once multiple agents/sessions write concurrently, naive "last write wins" is unsafe — a weaker writer can clobber a stronger belief. Instead:
+
+- **Optimistic concurrency.** Track a head revision + ETag per record; a write conditions on the etag it read. On a miss, the loser **re-reads and re-merges** (bounded retries). LWW is rejected.
+- **Append-only + head tracking.** Never mutate in place; append a new revision and resolve the current head by greatest revision. This gives you history for free.
+- **Conflict resolution by role/confidence/recency**, not arrival order. For single-valued facts, a new value *supersedes* the old (recency-weighted); for multi-valued, both can coexist.
+- **Serialize or publish/subscribe** shared-state updates so agents don't reason on stale beliefs. Turn-taking is the simplest; pub/sub ("when the plan changes, subscribers refresh") scales better.
+
+---
+
+## 7. Design against the four failure modes
+
+Shared MAS memory has four canonical failure modes. Design each guard explicitly and you can audit the system against this table:
+
+| Failure mode | What it looks like | Mitigation |
+| --- | --- | --- |
+| **Unauthorized leakage** | One tenant/agent reads another's memory | Namespaces-by-construction + in-scope re-verification (§2) |
+| **Stale propagation** | Outdated beliefs keep shaping output | Maturation decay + finite retention (§4) |
+| **Contradiction persistence** | Conflicting entries both survive | Supersede single-valued facts; recency-weighted synthesis; no-LWW (§6) |
+| **Provenance collapse** | Can't tell who wrote what, when, why | Append-only, head-tracked store with per-record author/support/evidence/timestamp (§6) |
+
+---
+
+## 8. Protect memory contents
+
+Treat protection as enforced invariants, not documentation:
+
+- **No sensitive payloads in long-term memory.** Screen every long-term write; refuse fail-closed if it carries a sensitive value or an identifier. Re-fetch sensitive data from its system of record with provenance at use time.
+- **Encrypt at rest, fail closed.** Make encryption-at-rest a construction contract — the store cannot be built without it configured. Prefer a **customer/tenant-managed key** so the data owner controls key policy and can revoke (crypto-shred).
+- **Encrypt in transit.** TLS on every hop.
+- **Keep memory out of logs.** Never use a namespace or record content as a log key or metric dimension — log by opaque counts/decisions only.
+- **Finite retention.** A tunable, finite horizon; expired records age out. Nothing persists forever.
+- **Degrade, don't fail.** If memory or a strategy is unavailable, proceed **unpersonalized with a stated limitation** rather than failing the interaction.
+
+---
+
+## 9. Make it inspectable and correctable
+
+Trust requires visibility. Expose, per belief: **what** the system believes, **why** (its supporting evidence/support count), and whether it is **currently applied** (mature). Let a principal (or an admin on their behalf) **correct** a wrong belief or **reset** a scope. Because the store is append-only, corrections and resets are themselves auditable.
+
+---
+
+## 10. Keep storage behind a seam
+
+Put the concrete store behind a `MemoryBackend` interface (`read(namespace, …)` / `write(namespace, record, …)`). Everything above it — namespacing, maturation, retrieval+clamp, the hub, the governance clamp — is identical regardless of backend. This buys you three things:
+
+- **Testability.** Inject an in-memory fake for unit tests; production injects the real store. Same construction path.
+- **Portability / residency.** Swap the endpoint to run the store in a service account *or* in the customer's account under their key — no change above the seam.
+- **Credential/rotation hygiene.** For long-running processes, build a fresh client per operation (re-reading rotated credentials) rather than caching one that can expire.
+
+---
+
+## 11. A build checklist
+
+- [ ] Hybrid topology: one shared store + per-agent private memory, both behind one hub.
+- [ ] Namespaces derived only from authenticated context; no tenant-id argument anywhere.
+- [ ] In-scope re-verification on every returned record, fail-closed.
+- [ ] Short-term vs long-term split; only earned, de-identified knowledge crosses over.
+- [ ] Draft → merge → synthesis pipeline with a maturation gate (provisional/mature/decay).
+- [ ] Declarative-vs-behavioral maturation distinction; per-agent tunable thresholds.
+- [ ] Retrieval reads `status=mature` and clamps to shared guardrails, enforced in the governance layer.
+- [ ] Optimistic concurrency (no LWW); append-only + head tracking; provenance on every record.
+- [ ] The four-failure-mode audit table has a real mitigation for each row.
+- [ ] Protection: PHI/PII screen, encrypt-at-rest-or-fail-closed, no-memory-in-logs, finite retention, degrade-with-limitation.
+- [ ] Inspect / correct / reset surface for every belief.
+- [ ] Storage behind a `MemoryBackend` seam (test fake, residency swap, credential rotation).
+
+---
+
+## Appendix: selected references
+
+Directional; largely preprints, cited for framing.
+
+- Wu & Shu (2025), *Memory in LLM-based Multi-agent Systems: Mechanisms, Challenges, and Collective Intelligence* (TechRxiv) — topology/placement and consistency vocabulary.
+- Rezazadeh et al. (2025), *Collaborative Memory: Multi-User Memory Sharing in LLM Agents with Dynamic Access Control* (arXiv 2505.18279) — private/shared fragments with immutable provenance under time-evolving access.
+- *Governed Shared Memory for Multi-Agent LLM Systems* (arXiv 2606.24535) — the four fleet-memory failure modes in §7.
+- *MIRIX: Multi-Agent Memory System for LLM-Based Agents* (arXiv 2507.07957) — a typed memory-store taxonomy.
+- *G-Memory: Tracing Hierarchical Memory for Multi-Agent Systems* (arXiv 2506.07398, NeurIPS 2025) — hierarchical insight/query/interaction memory.
+- *Attacks, Defenses, and Governance Across the Memory Lifecycle* (arXiv 2604.16548) — why writable persistent memory is a distinct threat surface.
