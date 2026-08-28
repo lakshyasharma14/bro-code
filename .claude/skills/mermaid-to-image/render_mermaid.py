@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 FENCE_RE = re.compile(r"```mermaid\n(.*?)\n```", re.DOTALL)
 
 
@@ -30,7 +30,9 @@ def render_png(mermaid_src: str, width: int, bg: str) -> bytes:
     encoded = base64.urlsafe_b64encode(mermaid_src.encode()).decode()
     params = urllib.parse.urlencode({"type": "png", "backgroundColor": bg, "width": width})
     url = f"https://mermaid.ink/img/{encoded}?{params}"
-    with urllib.request.urlopen(url, timeout=30) as resp:
+    # mermaid.ink sits behind Cloudflare, which 403s Python's default User-Agent.
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
         if resp.status != 200:
             raise RuntimeError(f"mermaid.ink returned HTTP {resp.status} for a diagram")
         return resp.read()
