@@ -23,61 +23,7 @@ It is organized as a series of decisions. For each: the choice, why, and how to 
 
 A generic layout of the pieces this guide builds. A user interacts through an **orchestration** entry point; agents run behind a **governance harness** that mediates every data read, memory access, and emit; the **memory layer** turns short-term events into matured long-term knowledge and serves it back.
 
-```mermaid
-flowchart LR
-    USER(["User / Principal"])
-    ORCH["Orchestration<br/>(entry / routing)"]
-
-    subgraph HARNESS["Governance Harness"]
-        direction TB
-        subgraph AGENTS["Agents"]
-            direction LR
-            A1["Agent A"]
-            A2["Agent B"]
-            A3["Agent C"]
-            A4["…"]
-        end
-        GUARD["Output guardrail · sensitive-data checkpoint ·<br/>audit · memory read/clamp · access control"]
-    end
-
-    subgraph DATA["Data Layer (systems of record)"]
-        direction TB
-        D1["Source A"]
-        D2["Source B"]
-        D3["Source C"]
-    end
-
-    subgraph MEM["Memory Layer"]
-        direction TB
-        ST["Short-term memory<br/>(staged events · context · messages · feedback)"]
-        PIPE["Memory generation pipeline<br/>DRAFT → MERGE → SYNTHESIS"]
-        LT["Long-term memory"]
-        RET["Retrieval"]
-        ST -->|distill| PIPE
-        PIPE -->|writes to| LT
-        LT --> RET
-    end
-
-    USER -->|interacts / feedback| ORCH
-    ORCH --> HARNESS
-    HARNESS -->|fetch data| DATA
-    HARNESS -->|events / signals| ST
-    RET -->|matured knowledge| HARNESS
-
-    STRAT["Generation strategies (examples)<br/>• Org level: shared preferences & patterns<br/>• Agent level: per-agent preferences & style<br/>• Principal profile: who they are / how they work"]
-    RETS["Retrieval strategies (examples)<br/>• Recency — last N by timestamp<br/>• Semantic — top-k nearest to the query<br/>• Keyword / full-text<br/>• Hybrid — vector + keyword, then rerank<br/>• Graph traversal — walk entities & edges"]
-    PIPE -.-> STRAT
-    RET -.-> RETS
-
-    classDef harness fill:#d5f5d5,stroke:#2f855a,color:#111;
-    classDef data fill:#fde2e2,stroke:#c53030,color:#111;
-    classDef mem fill:#d6e9ff,stroke:#2b6cb0,color:#111;
-    classDef note fill:#eef4ff,stroke:#4a5568,color:#111;
-    class A1,A2,A3,A4,GUARD harness;
-    class D1,D2,D3 data;
-    class ST,PIPE,LT,RET mem;
-    class STRAT,RETS note;
-```
+<center>![Reference architecture: customer to orchestration to the agents harness (agents, guardrails, feedback loop) to the memory layer (short-term memory, memory generation strategy, long-term memory, retrieval)](/static/images/memory-architecture/reference-architecture.png)</center>
 
 **Reading it:** the user talks to orchestration; agents sit inside a harness that is the single path to data, memory, and output (so nothing bypasses governance); short-term events are distilled through the draft→merge→synthesis pipeline into long-term memory; retrieval serves matured knowledge back to the agents. The dotted callouts list interchangeable **generation** and **retrieval** strategies — pick per use case.
 
@@ -158,16 +104,7 @@ The boundary between them is the maturation pipeline (next section). Short-term 
 
 Don't let a single event mutate long-term beliefs directly. Run an explicit three-stage pipeline so cheap extraction is isolated from expensive consolidation, and "what we actually apply" is isolated from both:
 
-```mermaid
-flowchart LR
-    E["Short-term events<br/>(turns · corrections · outcomes)"] --> X["DRAFT<br/>per-event extraction<br/>(high recall)"]
-    X --> C["MERGE<br/>dedupe · conflict/supersede ·<br/>optimistic (ETag) write"]
-    C --> S["SYNTHESIS<br/>maturation · contradiction · decay"]
-    S --> R["Rule record<br/>{support_count, last_seen, confidence, status}"]
-    R -->|support ≥ threshold & consistent & recent| M["MATURE (applied)"]
-    R -->|below threshold| P["PROVISIONAL (stored, not applied)"]
-    M -->|no confirming signal over TTL| D["DECAY → provisional / expired"]
-```
+<center>![Short-to-long memory pipeline: draft, merge, synthesis, maturation gate](/static/images/memory-architecture/maturation-pipeline.png)</center>
 
 - **Draft** (per event, cheap): extract candidate rules from a single event. High recall, no cross-record reasoning.
 - **Merge** (per namespace, on write): fold drafts into existing records — dedupe, detect conflict/supersede, bump `support_count` / `last_seen` / `confidence`. Use **optimistic concurrency (ETag/compare-and-append)** so two concurrent sessions can't clobber each other (see §6).
