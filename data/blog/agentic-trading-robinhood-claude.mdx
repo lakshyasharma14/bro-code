@@ -18,6 +18,8 @@ images: ['/static/images/agentic-trading-robinhood-claude/banner.png']
 
 I've been building a trading assistant for my own Robinhood account on top of Claude Code: it watches a stock watchlist, scores candidates against a couple of well-known technical strategies, and produces a fully-specified BUY/SELL/HOLD recommendation — entry, stop-loss, take-profit, position size, reasoning — grounded in fundamentals, earnings-calendar risk, recent news, and market regime. What it never does, under any circumstance, is place a trade. This post is about why that boundary exists and how it's enforced.
 
+**The code is public: [github.com/lakshyasharma14/robinhood-agentic-trading](https://github.com/lakshyasharma14/robinhood-agentic-trading).** Everything below — the strategy engine, the watchlist screener, the risk rules — is the actual code, not a paraphrase. Setup instructions are in the [last section](#try-it-yourself).
+
 ## The shape of the system
 
 Three pieces, deliberately kept separate:
@@ -76,3 +78,40 @@ Neither task, on its own initiative, contacts me about a HOLD — the report onl
 ## Why bother, if it never trades?
 
 Because the expensive part of discretionary trading was never "can I compute RSI" — it's holding a consistent, unemotional process across dozens of tickers, every day, without skipping the boring context-gathering step when a setup looks exciting. The agent doesn't get tired of checking earnings dates. It doesn't skip the market-regime check because the breakout looks obviously good. It applies the same 1%-risk, 2:1-reward-risk, no-entry-near-resistance rules on the hundredth ticker as the first. That consistency is the actual product; the trade execution was always going to stay a human decision, made deliberately, in the actual brokerage app, by the person whose money it is.
+
+---
+
+## Try it yourself
+
+The repo is [github.com/lakshyasharma14/robinhood-agentic-trading](https://github.com/lakshyasharma14/robinhood-agentic-trading) — MIT licensed, six files, no dependencies beyond pandas and numpy. Full setup instructions are in its README; the short version:
+
+**1. Install and verify the engine — no broker connection needed for this part.**
+
+```bash
+git clone https://github.com/lakshyasharma14/robinhood-agentic-trading.git
+cd robinhood-agentic-trading
+pip install -r requirements.txt
+python3 test_strategy_engine.py
+```
+
+That last command runs the strategy engine against synthetic breakout/pullback/choppy price series and asserts it triggers BUY where it should and respects the 1%-risk / 2:1-reward-risk caps everywhere. If it prints `All assertions passed.`, the engine itself is working.
+
+**2. Connect an MCP-capable agent to Robinhood.** This was built and run against [Robinhood's official Agentic Trading MCP](https://robinhood.com), which exposes market-data and account tools (`get_equity_historicals`, `get_portfolio`, `get_equity_fundamentals`, and so on) to an AI agent. With Claude Code:
+
+```bash
+claude mcp add robinhood-trading --transport http https://agent.robinhood.com/mcp/trading
+```
+
+then run `/mcp` inside a session to authenticate. Any other MCP client works the same way — the strategy engine has no idea what called it, by design.
+
+**3. Fetch real bars and run a live scan.** Pull `get_equity_historicals` for your tickers, save the JSON, then:
+
+```bash
+python3 run_live_scan.py <your_account_equity> historicals.json
+```
+
+You'll get one BUY/SELL/HOLD decision per ticker per strategy, with the reasoning spelled out — the same shape of output the [worked example](#what-actually-gets-reported) above came from.
+
+**4. Stop there, on purpose.** Whatever the scan tells you, `prepare_order.py` will print a ticket and open the ticker's Robinhood page — it will not submit anything. That last step, on purpose, is yours.
+
+If you build on this, the one thing worth keeping intact is the boundary this whole post is about: no function anywhere in the call path that can place an order. Everything else — the strategies, the thresholds, the watchlist rules — is a starting point to change freely.
