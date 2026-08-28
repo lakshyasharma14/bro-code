@@ -4,7 +4,7 @@ date: 2026-08-28T00:00:00Z
 lastmod: '2026-08-28'
 tags: ['ai', 'llm', 'vllm', 'system design', 'inference']
 draft: false
-summary: "A source-grounded look at what's grown around vLLM's V1 engine since the canonical PagedAttention/continuous-batching story: fault-tolerant engine cores, tiered KV cache offloading, dual-batch overlap, and adaptive speculative decoding."
+summary: "A source-grounded look at what's grown around vLLM's V1 engine since the canonical PagedAttention story: fault-tolerant engine cores, tiered KV offload, dual-batch overlap, async scheduling, and adaptive speculative decoding — with the real config flags for each."
 layout: PostSimple
 bibliography: references-data.bib
 ---
@@ -13,7 +13,15 @@ bibliography: references-data.bib
 
 *Grounded in a fresh clone of [vllm-project/vllm](https://github.com/vllm-project/vllm) at commit `e6bfe03` (Aug 27, 2026). This assumes you already know the fundamentals — PagedAttention, continuous batching, the scheduler/KV-cache-manager split — covered well elsewhere, including in [Aleksa Gordić's "Inside vLLM"](https://www.aleksagordic.com/blog/vllm). This post is about what's grown around that core since then.*
 
-PagedAttention and continuous batching are the two ideas everyone learns first, and for good reason — they're why vLLM exists. But a year is a long time for a project moving this fast: `vllm/v1/core/sched/scheduler.py` alone is over 3,000 lines now, and the V1 tree has grown entire subsystems that didn't exist, or barely existed, when the canonical deep-dives were written — a fault-tolerance layer, a multi-tier KV cache offload system, compute/communication overlap for MoE models, and adaptive speculative decoding. None of these get much organized writing. This is a walkthrough of four of them, read directly from source.
+PagedAttention and continuous batching are the two ideas everyone learns first, and for good reason — they're why vLLM exists. But a year is a long time for a project moving this fast: `vllm/v1/core/sched/scheduler.py` alone is over 3,000 lines now, and the V1 tree has grown entire subsystems that didn't exist, or barely existed, when the canonical deep-dives were written — a fault-tolerance layer, a multi-tier KV cache offload system, compute/communication overlap for MoE models, an async-pipelined scheduler, and adaptive speculative decoding. None of these get much organized writing. This is a walkthrough of five of them, read directly from source, config flags and all.
+
+## Fundamentals in one diagram, for orientation
+
+One paragraph of scaffolding before the new material, since every subsystem below hangs off this shape. A client request enters through `AsyncLLM`, gets handed to an `EngineCore` (one process per data-parallel rank, wrapped in the fault-tolerance loop covered next), whose `Scheduler` decides what to run this step — mixing prefill and decode work for continuous batching — using its `KVCacheManager` to allocate and reuse paged blocks. The scheduler's decision (a `SchedulerOutput`) goes to an `Executor` (single-process or multi-process, depending on world size), which drives one or more GPU `Worker`s through an actual forward pass and hands sampled tokens back up the chain:
+
+<center>![vLLM V1 engine fundamentals: client request through AsyncLLM, EngineCore, Scheduler with its KVCacheManager, Executor, and GPU Workers, and back](/static/images/vllm-v1-engine-beyond-pagedattention/diagram-3.png)</center>
+
+Everything from here on is something layered onto, or threaded through, one of these boxes — not a replacement for any of them.
 
 ## Fault tolerance: the engine core can crash without taking the server down
 
@@ -44,6 +52,17 @@ def fault_tolerant_wrapper(busy_loop_func: Callable):
 
 When the loop raises, `EngineCoreSentinel.on_fault()` does three things before anything else: aborts every in-flight request on that engine (so callers get a clean failure instead of hanging), clears the batch queue, and flips a status flag — `UNHEALTHY` if the model executor itself is still alive, `DEAD` if it isn't. That status gets pushed out as a utility output so the client-facing layer can route around a degraded engine immediately rather than discovering it via timeout.
 
+Recovery isn't automatic from inside the engine — it's a command the sentinel *waits* for. `handle_command()` accepts a `FaultToleranceRequest` (an `instruction` name plus a params dict, both `msgspec.Struct`s for cheap serialization) and rejects it outright unless the engine's current status is `UNHEALTHY`:
+
+```python
+class FaultToleranceRequest(msgspec.Struct):
+    instruction: str
+    params: dict[str, Any]
+    request_id: str = ""
+```
+
+That rejection-unless-unhealthy check matters: it means an external controller drives the state machine (`HEALTHY -> UNHEALTHY -> HEALTHY`, or `-> DEAD` if the executor didn't survive), and the engine won't silently accept a stray recovery command while it's already fine. `run_method()` then dispatches the named instruction dynamically onto the sentinel — `retry` is the one instruction implemented today, but the dispatch is generic, which reads like room for more recovery strategies (partial restart, drain-and-replace) later.
+
 Recovery is the more interesting part, because a crashed rank in a data-parallel group can't just resume in isolation — the `torch.distributed` process group it belonged to is now broken for every other rank too. `retry()` handles this by having rank 0 mint a fresh set of ports through a shared key-value store, tearing down the old stateless DP group, and reinitializing it with the new ports before the executor's workers are told to resume:
 
 ```python
@@ -57,6 +76,21 @@ def _reinit_dp_group(self) -> dict:
 ```
 
 The net effect: one GPU having a bad day — an OOM, a transient NCCL error, a driver hiccup — degrades one shard of throughput instead of taking an outage. That's a meaningfully different reliability posture than "the engine is a single point of failure," and it's the kind of production-hardening feature that doesn't show up in an architecture walkthrough focused on the request-to-token happy path.
+
+Turning it on is one flag, with one tunable in `vllm/config/fault_tolerance.py`:
+
+```bash
+vllm serve <model> --data-parallel-size 4 --enable-fault-tolerance
+```
+
+```python
+class FaultToleranceConfig:
+    engine_recovery_timeout_sec: int = 120
+    """How long a faulted engine waits for a recovery instruction before
+    giving up and re-raising the original error."""
+```
+
+120 seconds by default — long enough for whatever's watching engine health (an orchestrator, a liveness controller) to notice `UNHEALTHY`, decide on a recovery action, and issue the `retry`, but short enough that a genuinely dead engine doesn't hang the deployment indefinitely waiting for a rescue that isn't coming.
 
 ## KV cache offload: the cache doesn't have to end at GPU HBM
 
@@ -73,6 +107,31 @@ What makes this more than "an LRU on a second tier" is that it's built as a tier
 - **P2P tier** (`tiering/p2p/`) — pulling a block from another *instance's* cache over the network via NIXL, with its own session/control protocol over ZMQ, rather than recomputing it or going to storage. If a sibling replica already has the block hot, why not just ask it?
 
 The detail that signals real engineering depth here is `CanonicalKVCacheTensor` / `CanonicalPageMapping` in `kv_offload/base.py`. A block offloaded by one worker isn't necessarily loaded back by a worker with the same tensor-parallel shape — the "canonical" representation normalizes page layout so blocks can be shared correctly across different parallelism configurations, with an explicit `is_writer()` rule for which rank owns writing a given block when several ranks hold identical bytes. That's the kind of correctness detail that only shows up once you're running this at a scale where TP degree varies across replicas.
+
+Not every offloaded block needs the same treatment on write, either. `OffloadPolicy` gives each request one of two strategies:
+
+```python
+class OffloadPolicy(Enum):
+    BLOCK_LEVEL = "block_level"      # offload only newly-computed blocks;
+                                       # skip blocks that hit an existing prefix
+    REQUEST_LEVEL = "request_level"  # offload every block for the request,
+                                       # prefix hits included
+```
+
+`BLOCK_LEVEL` is the common case — why re-store a block that's already sitting in the offload tier because an earlier request shared the same prefix? `REQUEST_LEVEL` exists for tiers that need a request's *complete* KV context available as a unit (a P2P tier handing the whole thing to a peer, say), where partial coverage from skipped prefix-hit blocks wouldn't be usable.
+
+It's wired in as a `KVConnectorBase_V1` implementation (`OffloadingConnector`), the same connector interface disaggregated prefill/decode setups use — so it's configured the same way, through `--kv-transfer-config`:
+
+```bash
+vllm serve <model> --kv-transfer-config '{
+  "kv_connector": "OffloadingConnector",
+  "kv_role": "kv_both",
+  "kv_connector_extra_config": {
+    "cpu_bytes_to_use": 17179869184,
+    "eviction_policy": "lru"
+  }
+}'
+```
 
 ## Dual-batch overlap: hiding MoE communication behind compute
 
@@ -97,6 +156,60 @@ def _cpu_yield(self):
 
 CUDA-side ordering is handled separately with `torch.cuda.Event`s (`gpu_comm_done_event`, `gpu_compute_done_event`) so the compute stream can wait on the *previous* microbatch's communication to finish without blocking the CPU thread that's driving it. It's a small, self-contained file, but it's implementing a real distributed-systems pattern — cooperative scheduling with explicit hand-off — entirely with primitives most people only reach for in much lower-level code.
 
+Splitting a batch in two isn't free — smaller microbatches mean smaller matmuls, which can lose GPU efficiency if there wasn't much work to split in the first place. So DBO is gated behind token-count thresholds rather than applied unconditionally:
+
+```python
+enable_dbo: bool = False
+"""Enable dual batch overlap for the model executor."""
+dbo_decode_token_threshold: int = 32
+"""Batches of decode-only work below this many tokens skip microbatching."""
+dbo_prefill_token_threshold: int = 512  # TODO(lucas): tune
+"""Batches containing any prefill below this many tokens skip microbatching."""
+```
+
+```bash
+vllm serve <model> --enable-dbo
+```
+
+Below threshold, the step just runs as one batch — DBO only kicks in once there's enough work that splitting it and overlapping the halves beats running it whole. That `# TODO(lucas): tune` sitting on the prefill threshold in the actual source is a small, honest signal of where this feature is on its maturity curve.
+
+## Async scheduling: don't wait for the model to answer before planning the next step
+
+The base `Scheduler` has an implicit assumption baked into its step loop: schedule a batch, run it, get real token IDs back, *then* schedule the next batch — because scheduling needs to know what actually got generated (did a request stop? what's its new sequence length?). That's a synchronous dependency between "the GPU finished a forward pass" and "the scheduler can plan the next one," and it costs a bubble: the CPU scheduling work for step N+1 can't start until step N's GPU work has actually returned.
+
+`AsyncScheduler` (`vllm/v1/core/sched/async_scheduler.py`) breaks that dependency with placeholders. When it schedules a request, instead of waiting to know how many tokens will actually come back, it just books the count it *expects*:
+
+```python
+def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
+    ...
+    for req_id in scheduler_output.num_scheduled_tokens:
+        request = self.requests[req_id]
+        ...
+        request.num_output_placeholders += (
+            self.num_sampled_tokens_per_step + cur_num_spec_tokens
+        )
+        # Real token ids get filled in later, in the worker process.
+        request.spec_token_ids = self._spec_token_placeholders
+```
+
+The scheduler can now move on to planning step N+1 immediately, treating those placeholder slots as provisionally consumed. When the real output for step N eventually arrives, `_update_request_with_output()` reconciles it — decrementing the placeholder count by however many tokens actually came back, and only caching KV blocks for requests that are still `RUNNING` (a request that got preempted in the meantime is skipped, and a `is_stale` flag guards against double-decrementing if a delayed delivery shows up after the state's already moved on):
+
+```python
+if not is_stale:
+    request.num_output_placeholders -= len(new_token_ids)
+    assert request.num_output_placeholders >= 0
+```
+
+This is the same idea as instruction-level pipelining, applied to the scheduler/executor boundary instead of a CPU: don't stall the planner waiting for an answer you can reasonably predict the shape of, and reconcile when the real answer shows up. It's also what makes pipeline-parallel execution efficient — with PP, a step's output genuinely isn't available until it's flowed through every stage, so a scheduler that insists on waiting for it before planning the next step would leave stages idle.
+
+It's on by default in current V1 (auto-disabled for a handful of incompatible configs — some spec-decode methods, certain executors), and you can force it off explicitly:
+
+```bash
+vllm serve <model> --async-scheduling false
+```
+
+The `SchedulerConfig` docstring undersells it a little — "helps to avoid gaps in GPU utilization" — for what's structurally a decoupling of two things that used to be lock-step.
+
 ## Adaptive speculative decoding
 
 Speculative decoding itself is well covered elsewhere: a small draft model (or n-gram/EAGLE/Medusa-style proposer) guesses several tokens ahead, the target model verifies them in one pass, and you keep whatever prefix was accepted. What's newer is `vllm/v1/spec_decode/dynamic/`, which stops treating the number of speculative tokens (K) as a fixed setting and instead varies it by current batch size:
@@ -108,8 +221,19 @@ DynamicSDSchedule = list[tuple[int, int, int]]
 
 The intuition is straightforward once stated: speculative decoding's win comes from spending otherwise-idle compute headroom on draft verification, and how much headroom you have depends on how full the batch already is. At batch size 4, there's plenty of slack — spend it on K=5 speculative tokens. At batch size 200, the GPU is already saturated with real work, and verifying five speculative tokens per request is pure overhead if most get rejected — so the schedule might drop to K=1 or K=0. The config compiles down to a dense array (`dense_schedule[batch_size] -> K`) precomputed once, so the scheduler does an array lookup per step rather than a range search.
 
+In practice you configure the ranges, not the lookup table — vLLM builds the dense array for you:
+
+```bash
+vllm serve <model> --speculative-config '{
+  "method": "ngram",
+  "num_speculative_tokens_per_batch_size": [[1, 16, 5], [17, 64, 3], [65, 256, 1]]
+}'
+```
+
+Small batches (1-16 requests) get K=5, mid-size batches get K=3, and anything above 64 concurrent requests drops to K=1 — one ratchet down each time the batch gets busy enough that speculation's marginal value shrinks.
+
 ## The shape of the change
 
-None of these four are extensions to PagedAttention or continuous batching — they're layered on top of an engine that already assumed those were solved. Fault tolerance is about the engine surviving its own failures. Tiered KV offload is about memory extending past a single GPU's HBM, with correctness preserved across heterogeneous parallelism. Dual-batch overlap is about hiding communication latency that MoE architectures introduce. Dynamic speculative decoding is about spending a scarce, time-varying resource (idle compute) adaptively instead of statically.
+None of these five are extensions to PagedAttention or continuous batching — they're layered on top of an engine that already assumed those were solved. Fault tolerance is about the engine surviving its own failures. Tiered KV offload is about memory extending past a single GPU's HBM, with correctness preserved across heterogeneous parallelism. Dual-batch overlap is about hiding communication latency that MoE architectures introduce. Async scheduling is about decoupling the planner from the executor so neither has to stall waiting on the other. Dynamic speculative decoding is about spending a scarce, time-varying resource (idle compute) adaptively instead of statically.
 
-The throughline is that vLLM V1 has quietly become less of "an efficient inference engine" and more of "a fault-tolerant, tiered-memory, communication-overlapped distributed system that happens to serve LLM requests." If you're coming back to the codebase after reading one of the earlier deep dives, that's the register shift to expect — the request-scheduling core is still recognizable, but almost everything built around it now assumes production failure modes and heterogeneous deployment topologies that weren't yet in scope a year ago.
+The throughline is that vLLM V1 has quietly become less of "an efficient inference engine" and more of "a fault-tolerant, tiered-memory, pipelined, communication-overlapped distributed system that happens to serve LLM requests." If you're coming back to the codebase after reading one of the earlier deep dives, that's the register shift to expect — the request-scheduling core is still recognizable, but almost everything built around it now assumes production failure modes, latency-sensitive pipelining, and heterogeneous deployment topologies that weren't yet in scope a year ago. Every flag above is real and current as of the commit at the top of this post — check `vllm serve --help` against your own install before relying on any of them, since this is exactly the kind of surface that moves fast.

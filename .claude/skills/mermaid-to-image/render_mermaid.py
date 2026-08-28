@@ -59,17 +59,26 @@ def main():
     image_dir = REPO_ROOT / "public" / "static" / "images" / slug
     image_dir.mkdir(parents=True, exist_ok=True)
 
+    # Number diagrams after whatever's already in image_dir, so re-running
+    # this on a post that has some fences already converted (a likely
+    # real-world case) can't silently overwrite an earlier diagram-N.png
+    # that's referenced elsewhere in the file.
+    existing = [int(p.stem.split("-")[1]) for p in image_dir.glob("diagram-*.png")
+                if p.stem.split("-")[1].isdigit()]
+    start_n = max(existing, default=0) + 1
+
     out = []
     last_end = 0
-    for i, m in enumerate(matches, start=1):
+    for offset, m in enumerate(matches):
+        n = start_n + offset
         out.append(text[last_end:m.start()])
         mermaid_src = m.group(1)
-        print(f"Rendering diagram {i}/{len(matches)}...")
+        print(f"Rendering diagram {offset + 1}/{len(matches)} (as diagram-{n}.png)...")
         png_bytes = render_png(mermaid_src, args.width, args.bg)
-        img_path = image_dir / f"diagram-{i}.png"
+        img_path = image_dir / f"diagram-{n}.png"
         img_path.write_bytes(png_bytes)
-        web_path = f"/static/images/{slug}/diagram-{i}.png"
-        out.append(f"<center>![Diagram {i}]({web_path})</center>")
+        web_path = f"/static/images/{slug}/diagram-{n}.png"
+        out.append(f"<center>![Diagram {n}]({web_path})</center>")
         last_end = m.end()
     out.append(text[last_end:])
 
